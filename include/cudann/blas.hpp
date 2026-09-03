@@ -35,19 +35,21 @@ constexpr int TILE = 16;
 template <typename T>
 __global__ void gemm_k(bool ta, bool tb, int m, int n, int k, T alpha, const T *__restrict__ A, int lda,
                        const T *__restrict__ B, int ldb, T beta, T *C, int ldc) {
-    __shared__ T As[TILE][TILE];
+    // op(A) tile stored transposed: threadIdx.x (li) walks consecutive shared-memory words in
+    // the stores and the inner-loop loads (As[li][kk] would be a stride-16 bank conflict)
+    __shared__ T AsT[TILE][TILE];
     __shared__ T Bs[TILE][TILE];
     const int li = threadIdx.x, lj = threadIdx.y;
     const int i = blockIdx.x * TILE + li, j = blockIdx.y * TILE + lj;
     T acc = T(0);
     for (int t = 0; t < k; t += TILE) {
         int p = t + lj;
-        As[li][lj] = (i < m && p < k) ? (ta ? A[p + std::size_t(i) * lda] : A[i + std::size_t(p) * lda]) : T(0);
+        AsT[lj][li] = (i < m && p < k) ? (ta ? A[p + std::size_t(i) * lda] : A[i + std::size_t(p) * lda]) : T(0);
         p = t + li;
         Bs[li][lj] = (p < k && j < n) ? (tb ? B[j + std::size_t(p) * ldb] : B[p + std::size_t(j) * ldb]) : T(0);
         __syncthreads();
         for (int kk = 0; kk < TILE; ++kk)
-            acc += As[li][kk] * Bs[kk][lj];
+            acc += AsT[kk][li] * Bs[kk][lj];
         __syncthreads();
     }
     if (i < m && j < n) {
@@ -171,6 +173,8 @@ class Blas {
     void gemv(cudaStream_t s, bool ta, int m, int n, float alpha, const float *a, int lda, const float *x, int incx,
               float beta, float *y, int incy) {
         if (m_handwritten) {
+            if (incx != 1 || incy != 1)
+                throw std::invalid_argument("cudann: the tiled BLAS supports unit strides only");
             hw_gemv(s, ta, m, n, alpha, a, lda, x, beta, y);
             return;
         }
@@ -180,6 +184,8 @@ class Blas {
     void gemv(cudaStream_t s, bool ta, int m, int n, double alpha, const double *a, int lda, const double *x, int incx,
               double beta, double *y, int incy) {
         if (m_handwritten) {
+            if (incx != 1 || incy != 1)
+                throw std::invalid_argument("cudann: the tiled BLAS supports unit strides only");
             hw_gemv(s, ta, m, n, alpha, a, lda, x, beta, y);
             return;
         }
@@ -189,6 +195,8 @@ class Blas {
     /// result is a *device* pointer (pointer mode DEVICE), so no synchronisation is needed.
     void asum(cudaStream_t s, int n, const float *x, int incx, float *result) {
         if (m_handwritten) {
+            if (incx != 1)
+                throw std::invalid_argument("cudann: the tiled BLAS supports unit strides only");
             hw_reduce(s, true, n, x, result);
             return;
         }
@@ -197,6 +205,8 @@ class Blas {
     }
     void asum(cudaStream_t s, int n, const double *x, int incx, double *result) {
         if (m_handwritten) {
+            if (incx != 1)
+                throw std::invalid_argument("cudann: the tiled BLAS supports unit strides only");
             hw_reduce(s, true, n, x, result);
             return;
         }
@@ -205,6 +215,8 @@ class Blas {
     }
     void nrm2(cudaStream_t s, int n, const float *x, int incx, float *result) {
         if (m_handwritten) {
+            if (incx != 1)
+                throw std::invalid_argument("cudann: the tiled BLAS supports unit strides only");
             hw_reduce(s, false, n, x, result);
             return;
         }
@@ -213,6 +225,8 @@ class Blas {
     }
     void nrm2(cudaStream_t s, int n, const double *x, int incx, double *result) {
         if (m_handwritten) {
+            if (incx != 1)
+                throw std::invalid_argument("cudann: the tiled BLAS supports unit strides only");
             hw_reduce(s, false, n, x, result);
             return;
         }
