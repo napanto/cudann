@@ -7,6 +7,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace cudann {
@@ -69,10 +70,11 @@ __global__ void gemv_k(bool ta, int m, int n, T alpha, const T *__restrict__ A, 
 
 /// one block: result = sum |x| (abs) or sqrt(sum x^2)
 template <typename T> __global__ void reduce_k(bool abs, int n, const T *__restrict__ x, T *result) {
-    __shared__ double sdata[1024];
-    double v = 0.0;
+    // accumulates in T like the SYCL twin (sycl::reduction over T) and the vendor BLAS
+    __shared__ T sdata[1024];
+    T v = T(0);
     for (int i = threadIdx.x; i < n; i += blockDim.x) {
-        const double e = static_cast<double>(x[i]);
+        const T e = x[i];
         v += abs ? (e < 0 ? -e : e) : e * e;
     }
     sdata[threadIdx.x] = v;
@@ -83,7 +85,7 @@ template <typename T> __global__ void reduce_k(bool abs, int n, const T *__restr
         __syncthreads();
     }
     if (threadIdx.x == 0)
-        *result = static_cast<T>(abs ? sdata[0] : sqrt(sdata[0]));
+        *result = abs ? sdata[0] : static_cast<T>(sqrt(static_cast<double>(sdata[0])));
 }
 } // namespace handwritten
 
@@ -101,24 +103,33 @@ inline void check_blas_option(const std::string &name) {
                                 compiled_blas_backends().front() + "; use \"auto\")");
 }
 
+/// One cuBLAS/rocBLAS handle per stream (created up front: handle creation is not
+/// allowed inside a graph capture, and rocBLAS keeps a per-handle device workspace
+/// that concurrent calls on different streams must not share).
 class Blas {
   public:
-    explicit Blas(bool handwritten = false) : m_handwritten(handwritten) { check_blas(cublasCreate(&m_h), "cublasCreate"); }
-    bool handwritten() const { return m_handwritten; }
-    ~Blas() {
-        if (m_h)
-            (void)cublasDestroy(m_h);
+    Blas() = default;
+    Blas(bool handwritten, const std::vector<cudaStream_t> &streams) : m_handwritten(handwritten) {
+        if (m_handwritten)
+            return;
+        for (auto s : streams) {
+            cublasHandle_t h = nullptr;
+            check_blas(cublasCreate(&h), "cublasCreate");
+            check_blas(cublasSetStream(h, s), "cublasSetStream");
+            m_handles.emplace_back(s, h);
+        }
     }
+    bool handwritten() const { return m_handwritten; }
+    ~Blas() { destroy(); }
     Blas(const Blas &) = delete;
     Blas &operator=(const Blas &) = delete;
-    Blas(Blas &&o) noexcept : m_handwritten(o.m_handwritten), m_h(o.m_h) { o.m_h = nullptr; }
+    Blas(Blas &&o) noexcept : m_handwritten(o.m_handwritten), m_handles(std::move(o.m_handles)) { o.m_handles.clear(); }
     Blas &operator=(Blas &&o) noexcept {
         if (this != &o) {
-            if (m_h)
-                (void)cublasDestroy(m_h);
-            m_h = o.m_h;
+            destroy();
+            m_handles = std::move(o.m_handles);
             m_handwritten = o.m_handwritten;
-            o.m_h = nullptr;
+            o.m_handles.clear();
         }
         return *this;
     }
@@ -136,7 +147,6 @@ class Blas {
     template <typename T> void hw_reduce(cudaStream_t s, bool abs, int n, const T *x, T *result) {
         handwritten::reduce_k<T><<<1, 1024, 0, s>>>(abs, n, x, result);
     }
-    cublasHandle_t handle() const { return m_h; }
 
     static cublasOperation_t op(bool trans) { return trans ? CUBLAS_OP_T : CUBLAS_OP_N; }
 
@@ -146,8 +156,8 @@ class Blas {
             hw_gemm(s, ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
             return;
         }
-        use(s, CUBLAS_POINTER_MODE_HOST);
-        check_blas(cublasSgemm(m_h, op(ta), op(tb), m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc), "cublasSgemm");
+        cublasHandle_t h = use(s, CUBLAS_POINTER_MODE_HOST);
+        check_blas(cublasSgemm(h, op(ta), op(tb), m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc), "cublasSgemm");
     }
     void gemm(cudaStream_t s, bool ta, bool tb, int m, int n, int k, double alpha, const double *a, int lda,
               const double *b, int ldb, double beta, double *c, int ldc) {
@@ -155,8 +165,8 @@ class Blas {
             hw_gemm(s, ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
             return;
         }
-        use(s, CUBLAS_POINTER_MODE_HOST);
-        check_blas(cublasDgemm(m_h, op(ta), op(tb), m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc), "cublasDgemm");
+        cublasHandle_t h = use(s, CUBLAS_POINTER_MODE_HOST);
+        check_blas(cublasDgemm(h, op(ta), op(tb), m, n, k, &alpha, a, lda, b, ldb, &beta, c, ldc), "cublasDgemm");
     }
     void gemv(cudaStream_t s, bool ta, int m, int n, float alpha, const float *a, int lda, const float *x, int incx,
               float beta, float *y, int incy) {
@@ -164,8 +174,8 @@ class Blas {
             hw_gemv(s, ta, m, n, alpha, a, lda, x, beta, y);
             return;
         }
-        use(s, CUBLAS_POINTER_MODE_HOST);
-        check_blas(cublasSgemv(m_h, op(ta), m, n, &alpha, a, lda, x, incx, &beta, y, incy), "cublasSgemv");
+        cublasHandle_t h = use(s, CUBLAS_POINTER_MODE_HOST);
+        check_blas(cublasSgemv(h, op(ta), m, n, &alpha, a, lda, x, incx, &beta, y, incy), "cublasSgemv");
     }
     void gemv(cudaStream_t s, bool ta, int m, int n, double alpha, const double *a, int lda, const double *x, int incx,
               double beta, double *y, int incy) {
@@ -173,8 +183,8 @@ class Blas {
             hw_gemv(s, ta, m, n, alpha, a, lda, x, beta, y);
             return;
         }
-        use(s, CUBLAS_POINTER_MODE_HOST);
-        check_blas(cublasDgemv(m_h, op(ta), m, n, &alpha, a, lda, x, incx, &beta, y, incy), "cublasDgemv");
+        cublasHandle_t h = use(s, CUBLAS_POINTER_MODE_HOST);
+        check_blas(cublasDgemv(h, op(ta), m, n, &alpha, a, lda, x, incx, &beta, y, incy), "cublasDgemv");
     }
     /// result is a *device* pointer (pointer mode DEVICE), so no synchronisation is needed.
     void asum(cudaStream_t s, int n, const float *x, int incx, float *result) {
@@ -182,41 +192,50 @@ class Blas {
             hw_reduce(s, true, n, x, result);
             return;
         }
-        use(s, CUBLAS_POINTER_MODE_DEVICE);
-        check_blas(cublasSasum(m_h, n, x, incx, result), "cublasSasum");
+        cublasHandle_t h = use(s, CUBLAS_POINTER_MODE_DEVICE);
+        check_blas(cublasSasum(h, n, x, incx, result), "cublasSasum");
     }
     void asum(cudaStream_t s, int n, const double *x, int incx, double *result) {
         if (m_handwritten) {
             hw_reduce(s, true, n, x, result);
             return;
         }
-        use(s, CUBLAS_POINTER_MODE_DEVICE);
-        check_blas(cublasDasum(m_h, n, x, incx, result), "cublasDasum");
+        cublasHandle_t h = use(s, CUBLAS_POINTER_MODE_DEVICE);
+        check_blas(cublasDasum(h, n, x, incx, result), "cublasDasum");
     }
     void nrm2(cudaStream_t s, int n, const float *x, int incx, float *result) {
         if (m_handwritten) {
             hw_reduce(s, false, n, x, result);
             return;
         }
-        use(s, CUBLAS_POINTER_MODE_DEVICE);
-        check_blas(cublasSnrm2(m_h, n, x, incx, result), "cublasSnrm2");
+        cublasHandle_t h = use(s, CUBLAS_POINTER_MODE_DEVICE);
+        check_blas(cublasSnrm2(h, n, x, incx, result), "cublasSnrm2");
     }
     void nrm2(cudaStream_t s, int n, const double *x, int incx, double *result) {
         if (m_handwritten) {
             hw_reduce(s, false, n, x, result);
             return;
         }
-        use(s, CUBLAS_POINTER_MODE_DEVICE);
-        check_blas(cublasDnrm2(m_h, n, x, incx, result), "cublasDnrm2");
+        cublasHandle_t h = use(s, CUBLAS_POINTER_MODE_DEVICE);
+        check_blas(cublasDnrm2(h, n, x, incx, result), "cublasDnrm2");
     }
 
   private:
-    void use(cudaStream_t s, cublasPointerMode_t mode) {
-        check_blas(cublasSetStream(m_h, s), "cublasSetStream");
-        check_blas(cublasSetPointerMode(m_h, mode), "cublasSetPointerMode");
+    cublasHandle_t use(cudaStream_t s, cublasPointerMode_t mode) {
+        for (auto &[st, h] : m_handles)
+            if (st == s) {
+                check_blas(cublasSetPointerMode(h, mode), "cublasSetPointerMode");
+                return h;
+            }
+        throw std::logic_error("cudann: BLAS call on a stream without a handle");
+    }
+    void destroy() {
+        for (auto &[st, h] : m_handles)
+            (void)cublasDestroy(h);
+        m_handles.clear();
     }
     bool m_handwritten = false;
-    cublasHandle_t m_h = nullptr;
+    std::vector<std::pair<cudaStream_t, cublasHandle_t>> m_handles;
 };
 
 } // namespace cudann

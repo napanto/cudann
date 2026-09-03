@@ -443,8 +443,19 @@ template <typename T> class Network {
     std::vector<cudaEvent_t> m_events; ///< dependency events (no timing), recycled every epoch
     std::size_t m_event_pos = 0;
     Blas m_blas;
-    Profiler m_prof;
+    mutable Profiler m_prof;
     bool m_capturing = false;
+
+    // ---- dataset, step scalars and captured graphs: kept across train() calls ----
+    // (with persistent_workspace, so that the graphs captured by the first call are
+    // replayed by the next ones with the same shape instead of re-captured)
+    Buf m_X, m_Y, m_Xs, m_Ys;
+    detail::DevBuffer<std::uint32_t> m_perm_dev;
+    detail::PinnedBuffer<T> m_stage_x, m_stage_y;
+    detail::PinnedBuffer<kernels::StepScalars<T>> m_step_host;
+    detail::DevBuffer<kernels::StepScalars<T>> m_step_dev;
+    std::vector<cudaGraphExec_t> m_graph_exec;
+    std::size_t m_graph_N = 0, m_graph_B = 0; ///< the dataset shape the graphs were captured for
 
     // ---- parameters and optimiser state ----
     std::vector<Buf> m_W, m_b, m_mW, m_vW, m_mb, m_vb;
@@ -468,6 +479,8 @@ template <typename T> class Network {
     void init_parameters(const std::vector<std::vector<T>> *w, const std::vector<std::vector<T>> *b, unsigned seed);
     void ensure_workspace(std::size_t batch);
     void release_workspace();
+    void destroy_graphs();
+    void release_dataset();
     void snapshot_history();
     void sync_all();
     cudaStream_t stream(int i) const { return m_streams[static_cast<std::size_t>(i) % m_streams.size()]; }
@@ -497,13 +510,13 @@ template <typename T> void Network<T>::init_device() {
     m_info = describe(m_ordinal);
     m_kind = m_opts.memory;
     check_blas_option(m_opts.blas);
-    m_blas = Blas(use_handwritten(m_opts.blas));
     if (m_opts.workgroup_size) {
         // block sizes must be powers of two <= 1024 for the loss reduction
         unsigned b = 1;
         while (b * 2 <= std::min<unsigned>(m_opts.workgroup_size, 1024))
             b *= 2;
         m_block = b;
+        m_opts.workgroup_size = b; // options() reports the effective value
     }
     std::size_t S = (m_opts.queue == QueueOrder::InOrder) ? 1 : std::max<unsigned>(1, m_opts.streams);
 #if defined(__HIP_PLATFORM_AMD__) || defined(__HIP__)
@@ -517,6 +530,10 @@ template <typename T> void Network<T>::init_device() {
         check(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking), "cudaStreamCreate");
         m_streams.push_back(s);
     }
+    m_opts.streams = static_cast<unsigned>(S); // effective (1 for in_order, HIP graph)
+    // one BLAS handle per stream: rocBLAS keeps a per-handle device workspace that
+    // concurrent GEMMs on different streams would share
+    m_blas = Blas(use_handwritten(m_opts.blas), m_streams);
     m_prof = Profiler(m_opts.profile);
     m_host_scalars = detail::PinnedBuffer<double>(2);
     m_host_scalar_t = detail::PinnedBuffer<T>(1);
@@ -694,7 +711,7 @@ detail::Ev Network<T>::submit(int s, const ev_list &deps, Phase phase, F launch,
 template <typename T> void Network<T>::ensure_workspace(std::size_t batch) {
     if (batch <= m_cap && !m_act.empty())
         return;
-    release_workspace();
+    release_workspace(); // also drops the graphs and the dataset buffers (their addresses change)
     try {
         for (std::size_t l = 0; l <= m_L; ++l) {
             const bool needed = (l > 0) || !m_opts.direct_input;
@@ -727,10 +744,31 @@ template <typename T> void Network<T>::ensure_workspace(std::size_t batch) {
     m_cap = batch;
 }
 
+template <typename T> void Network<T>::destroy_graphs() {
+    for (auto g : m_graph_exec)
+        (void)cudaGraphExecDestroy(g);
+    m_graph_exec.clear();
+    m_graph_N = m_graph_B = 0;
+}
+
+template <typename T> void Network<T>::release_dataset() {
+    destroy_graphs();
+    m_X.release();
+    m_Y.release();
+    m_Xs.release();
+    m_Ys.release();
+    m_perm_dev.release();
+    m_stage_x.release();
+    m_stage_y.release();
+    m_step_host.release();
+    m_step_dev.release();
+}
+
 template <typename T> void Network<T>::release_workspace() {
-    if (!m_act.empty() || m_ones)
+    if (!m_act.empty() || m_ones || m_X)
         for (auto s : m_streams)
             (void)cudaStreamSynchronize(s);
+    release_dataset();
     m_act.clear();
     m_net.clear();
     m_delta.clear();
@@ -744,19 +782,28 @@ template <typename T> void Network<T>::release_workspace() {
 }
 
 template <typename T> std::vector<std::vector<T>> Network<T>::weights() const {
+    // the streams are non-blocking: the legacy-stream cudaMemcpy is not ordered after them
+    for (auto s : m_streams)
+        check(cudaStreamSynchronize(s), "cudaStreamSynchronize");
     std::vector<std::vector<T>> out(m_L);
     for (std::size_t l = 0; l < m_L; ++l) {
         out[l].resize(m_W[l].size());
         check(cudaMemcpy(out[l].data(), m_W[l].data(), m_W[l].size() * sizeof(T), cudaMemcpyDeviceToHost), "memcpy D2H");
+        if (m_prof.enabled())
+            m_prof.profile().bytes_d2h += m_W[l].size() * sizeof(T);
     }
     return out;
 }
 
 template <typename T> std::vector<std::vector<T>> Network<T>::biases() const {
+    for (auto s : m_streams)
+        check(cudaStreamSynchronize(s), "cudaStreamSynchronize");
     std::vector<std::vector<T>> out(m_L);
     for (std::size_t l = 0; l < m_L; ++l) {
         out[l].resize(m_b[l].size());
         check(cudaMemcpy(out[l].data(), m_b[l].data(), m_b[l].size() * sizeof(T), cudaMemcpyDeviceToHost), "memcpy D2H");
+        if (m_prof.enabled())
+            m_prof.profile().bytes_d2h += m_b[l].size() * sizeof(T);
     }
     return out;
 }
@@ -1051,55 +1098,70 @@ std::vector<T> Network<T>::train(const std::vector<T> &input_samples, const std:
     const bool graphs = m_opts.queue == QueueOrder::Graph;
     using Step = kernels::StepScalars<T>;
 
-    ensure_workspace(B);
+    ensure_workspace(B); // reallocation drops the graphs and the dataset buffers
     m_adam_step = 0;
 
-    // Buffers declared before the guard: on an exception the guard drains the
-    // streams before they are released.
-    Buf X, Y, Xs, Ys;
-    detail::DevBuffer<std::uint32_t> perm_dev;
-    detail::PinnedBuffer<T> stage_x, stage_y;
-    detail::PinnedBuffer<Step> step_host;
-    detail::DevBuffer<Step> step_dev;
-    std::vector<std::uint32_t> perm_host;
-    std::vector<cudaGraphExec_t> graph_exec;
+    // On an exception the guard drains the streams, ends a pending capture and drops
+    // the graphs and dataset buffers; on success they stay for the next call (the
+    // graphs captured here are replayed by every later train() of the same shape).
     struct Quiesce {
         Network &net;
-        std::vector<cudaGraphExec_t> &execs;
+        bool ok = false;
         ~Quiesce() {
+            if (net.m_capturing) {
+                cudaGraph_t g = nullptr;
+                if (cudaStreamEndCapture(net.stream(0), &g) == cudaSuccess && g)
+                    (void)cudaGraphDestroy(g);
+                net.m_capturing = false;
+                net.m_prof.suspend(false);
+            }
             for (auto s : net.m_streams)
                 (void)cudaStreamSynchronize(s);
-            for (auto g : execs)
-                (void)cudaGraphExecDestroy(g);
-            execs.clear();
-            net.m_capturing = false;
+            if (!ok)
+                net.release_dataset();
             (void)cudaGetLastError();
         }
-    } quiesce{*this, graph_exec};
+    } quiesce{*this};
 
     cudaStream_t s0 = stream(0);
     ev_list ev_ds;
-    {
-        X = Buf(N * n_in, m_kind);
-        Y = Buf(N * n_out, m_kind);
+    std::vector<std::uint32_t> perm_host;
+    const bool same_shape = m_graph_N == N && m_graph_B == B && m_X && m_X.size() == N * n_in && m_Y &&
+                            m_Y.size() == N * n_out && bool(m_Xs) == m_opts.shuffle && m_step_dev.size() == n_batches;
+    if (!same_shape) {
+        release_dataset();
+        m_X = Buf(N * n_in, m_kind);
+        m_Y = Buf(N * n_out, m_kind);
         if (m_opts.shuffle) {
-            Xs = Buf(N * n_in, m_kind);
-            Ys = Buf(N * n_out, m_kind);
-            perm_dev = detail::DevBuffer<std::uint32_t>(N, m_kind);
+            m_Xs = Buf(N * n_in, m_kind);
+            m_Ys = Buf(N * n_out, m_kind);
+            m_perm_dev = detail::DevBuffer<std::uint32_t>(N, m_kind);
         }
-        step_host = detail::PinnedBuffer<Step>(n_batches);
-        step_dev = detail::DevBuffer<Step>(n_batches, MemoryKind::Device);
+        m_step_host = detail::PinnedBuffer<Step>(n_batches);
+        m_step_dev = detail::DevBuffer<Step>(n_batches, MemoryKind::Device);
+        m_graph_N = N;
+        m_graph_B = B;
+    }
+    const bool replay = graphs && !m_graph_exec.empty(); // captured by a previous call
+    Buf &X = m_X, &Y = m_Y, &Xs = m_Xs, &Ys = m_Ys;
+    detail::DevBuffer<std::uint32_t> &perm_dev = m_perm_dev;
+    detail::PinnedBuffer<Step> &step_host = m_step_host;
+    detail::DevBuffer<Step> &step_dev = m_step_dev;
+    std::vector<cudaGraphExec_t> &graph_exec = m_graph_exec;
+    {
         const T *src_x = input_samples.data();
         const T *src_y = target_samples.data();
         if (m_opts.pinned_host) {
             const auto t0 = Profiler::clock::now();
-            stage_x = detail::PinnedBuffer<T>(N * n_in);
-            stage_y = detail::PinnedBuffer<T>(N * n_out);
-            std::memcpy(stage_x.data(), src_x, N * n_in * sizeof(T));
-            std::memcpy(stage_y.data(), src_y, N * n_out * sizeof(T));
+            if (m_stage_x.size() < N * n_in)
+                m_stage_x = detail::PinnedBuffer<T>(N * n_in);
+            if (m_stage_y.size() < N * n_out)
+                m_stage_y = detail::PinnedBuffer<T>(N * n_out);
+            std::memcpy(m_stage_x.data(), src_x, N * n_in * sizeof(T));
+            std::memcpy(m_stage_y.data(), src_y, N * n_out * sizeof(T));
             m_prof.profile().h2d_ns += m_prof.enabled() ? Profiler::elapsed_ns(t0) : 0;
-            src_x = stage_x.data();
-            src_y = stage_y.data();
+            src_x = m_stage_x.data();
+            src_y = m_stage_y.data();
         }
         T *xd = X.data(), *yd = Y.data();
         ev_ds.push_back(submit(0, {}, Phase::H2D, [&](cudaStream_t st) {
@@ -1165,27 +1227,43 @@ std::vector<T> Network<T>::train(const std::vector<T> &input_samples, const std:
             lr_eff = m_lr * (T(1) - gamma) + gamma * m_adapt.final_lr;
         }
         const bool adam = m_adapt.strategy == AdaptiveLearningRate<T>::Strategy::Adam;
+        // The per-step scalars of the whole epoch are known here: one H2D copy on s0
+        // (stream order puts it before every batch; the graphs read step_dev[bi] at
+        // replay, so each epoch's values are what the replays see).
+        {
+            unsigned t = m_adam_step;
+            for (std::size_t bi = 0; bi < n_batches; ++bi) {
+                if (adam)
+                    ++t;
+                Step &sh = step_host.data()[bi];
+                sh.lr_eff = lr_eff;
+                sh.t = static_cast<T>(t);
+                sh.c1 = (adam && m_opts.host_adam_correction)
+                            ? T(1) / (T(1) - static_cast<T>(std::pow(static_cast<double>(m_adapt.beta1), t)))
+                            : T(0);
+                sh.c2 = (adam && m_opts.host_adam_correction)
+                            ? T(1) / (T(1) - static_cast<T>(std::pow(static_cast<double>(m_adapt.beta2), t)))
+                            : T(0);
+            }
+            Step *sd = step_dev.data();
+            const Step *shp = step_host.data();
+            Ev es = submit(0, {}, Phase::H2D, [&](cudaStream_t st) {
+                check(cudaMemcpyAsync(sd, shp, n_batches * sizeof(Step), cudaMemcpyHostToDevice, st), "memcpy step");
+            }, n_batches * sizeof(Step));
+            first_deps.push_back(es);
+        }
 
         for (std::size_t bi = 0; bi < n_batches; ++bi) {
             const std::size_t start = bi * B;
             const std::size_t cur = std::min(B, N - start);
             if (adam)
                 ++m_adam_step;
-            Step &sh = step_host.data()[bi];
-            sh.lr_eff = lr_eff;
-            sh.t = static_cast<T>(m_adam_step);
-            sh.c1 = (adam && m_opts.host_adam_correction)
-                        ? T(1) / (T(1) - static_cast<T>(std::pow(static_cast<double>(m_adapt.beta1), m_adam_step)))
-                        : T(0);
-            sh.c2 = (adam && m_opts.host_adam_correction)
-                        ? T(1) / (T(1) - static_cast<T>(std::pow(static_cast<double>(m_adapt.beta2), m_adam_step)))
-                        : T(0);
             const Step *sp = step_dev.data() + bi;
             const T *x_batch = Xsrc + start * n_in;
             const T *targets = Ysrc + start * n_out;
 
-            if (graphs && epoch > 0) {
-                // replay the graph captured in the first epoch (it copies step_host[bi] itself)
+            if (graphs && (epoch > 0 || replay)) {
+                // replay the graph captured in the first epoch of the first call
                 m_prof.record(Phase::Other, s0, [&] { check(cudaGraphLaunch(graph_exec[bi], s0), "cudaGraphLaunch"); });
                 continue;
             }
@@ -1198,17 +1276,10 @@ std::vector<T> Network<T>::train(const std::vector<T> &input_samples, const std:
                 for (std::size_t si = 1; si < m_streams.size(); ++si)
                     check(cudaStreamWaitEvent(stream(int(si)), fork.e, 0), "fork");
             }
-            // the step scalars: a tiny H2D copy every batch (a node of the graph in Graph mode).
             // Inside a capture nothing may depend on uncaptured work (the epoch-start fill /
-            // gather): stream order on s0 already sequences the graph after them.
+            // gather / step copy): stream order on s0 already sequences the graph after them.
             const ev_list batch_first = (bi == 0 && !graphs) ? first_deps : ev_list{};
-            Ev es = submit(0, batch_first, Phase::H2D, [&](cudaStream_t st) {
-                check(cudaMemcpyAsync(step_dev.data() + bi, step_host.data() + bi, sizeof(Step), cudaMemcpyHostToDevice, st),
-                      "memcpy step");
-            }, sizeof(Step));
-            ev_list deps_batch = batch_first;
-            deps_batch.push_back(es);
-            run_batch(x_batch, targets, cur, sp, deps_batch, fine, direct, ev_upd, ev_act, ev_delta, ev_gw, ev_gb, chain_next);
+            run_batch(x_batch, targets, cur, sp, batch_first, fine, direct, ev_upd, ev_act, ev_delta, ev_gw, ev_gb, chain_next);
             if (graphs) {
                 // join every stream back into the capturing stream, end the capture, instantiate
                 for (std::size_t si = 1; si < m_streams.size(); ++si) {
@@ -1252,6 +1323,7 @@ std::vector<T> Network<T>::train(const std::vector<T> &input_samples, const std:
             }, sizeof(T));
         }
         sync_all();
+        ev_ds.clear(); // complete, and the pool events behind them are recycled from here on
         const double data_loss = m_opts.loss_reduction ? hs[0] : static_cast<double>(m_host_scalar_t.data()[0]);
         const double total = data_loss / static_cast<double>(N) + (use_reg ? hs[1] : 0.0);
         losses.push_back(static_cast<T>(total));
@@ -1272,6 +1344,7 @@ std::vector<T> Network<T>::train(const std::vector<T> &input_samples, const std:
             break;
     }
     sync_all();
+    quiesce.ok = true;
     if (!m_opts.record_history)
         snapshot_history();
     if (!m_opts.persistent_workspace)

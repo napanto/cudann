@@ -37,6 +37,20 @@ file layout and numerics.
   sources with `hipify-perl` at configure time and builds with hipcc + hipBLAS
   (used for the AMD portability experiment and for local validation on the
   RX 7900 XTX).
+- Fixes from code review (post-0.1.0, before the NVIDIA runs): the dataset buffers, the
+  per-step scalars and the captured CUDA graphs live in the object and are
+  reused by the next `train()` of the same shape (with `persistent_workspace`),
+  so the graphs are captured once by the warm-up call and only replayed
+  afterwards (0.1.0 re-captured them on every call, ~10-70 % on the timed
+  rows); the per-step scalars of a whole epoch travel in one H2D copy at
+  epoch start instead of one 16-byte copy per batch on the critical path;
+  one cuBLAS/rocBLAS handle per stream (rocBLAS keeps a per-handle device
+  workspace); `weights()`/`biases()` wait for the non-blocking streams before
+  the legacy-stream copy and count their bytes; an exception during capture
+  ends the capture; `options()` reports the effective `workgroup_size`
+  (power of two) and `streams` (1 for `in_order` and HIP graph mode); the
+  hand-written reductions accumulate in `T` like the SYCL twin; FMA
+  contraction pinned (`--fmad=true`, `-ffp-contract=fast`).
 - Same pybind11 module layout as syclnn (`Network_double`, ... `Options`,
   `devices()`, `build_info()`), tests through `fnn-testkit`, C++ driver
   `bench/train_bench.cu`, ctest smoke test, CI compile job, container image on
