@@ -5,6 +5,10 @@
 First release: direct CUDA translation of syclnn 0.2.0 with the same public API,
 file layout and numerics.
 
+- `Options.blas = "tiled"`: hand-written BLAS (a 16x16 tiled GEMM with shared memory,
+  a row-per-work-item GEMV, reductions for asum/nrm2) for the "same kernel in
+  the three programming models" comparison (E7 of the study).
+
 - `cudann/config.hpp`: identical to syclnn's (namespace apart); `Options.queue`
   gains a meaning for `graph`, `Options.streams` selects the number of streams.
 - `cudann/activations.hpp`: `__host__ __device__` versions of the same functions.

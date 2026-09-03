@@ -414,7 +414,7 @@ template <typename T> class Network {
     const std::vector<LayerDescription> &layers() const { return m_layers; }
     std::string device_name() const { return m_info.name; }
     DeviceInfo device_info() const { return m_info; }
-    std::string blas_backend() const { return compiled_blas_backends().front(); }
+    std::string blas_backend() const { return m_blas.handwritten() ? "tiled" : compiled_blas_backends().front(); }
     std::size_t parameter_count() const;
     std::size_t num_layers() const { return m_layers.size(); }
 
@@ -497,6 +497,7 @@ template <typename T> void Network<T>::init_device() {
     m_info = describe(m_ordinal);
     m_kind = m_opts.memory;
     check_blas_option(m_opts.blas);
+    m_blas = Blas(use_handwritten(m_opts.blas));
     if (m_opts.workgroup_size) {
         // block sizes must be powers of two <= 1024 for the loss reduction
         unsigned b = 1;
