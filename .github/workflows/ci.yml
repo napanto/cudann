@@ -1,0 +1,47 @@
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  compile:
+    name: nvcc compile (no GPU on the runner)
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/napanto/fnn-cuda:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: wheel (sm_61 + sm_80)
+        run: |
+          export CUDANN_CUDA_ARCHS="61;80" CMAKE_BUILD_PARALLEL_LEVEL=4 CUDAHOSTCXX=g++-13
+          pip install -v .
+          python -c "import cudann, sys; print(cudann.__version__, cudann.build_info()); print(cudann.devices())"
+      - name: C++ driver
+        run: |
+          cmake -S . -B build -G Ninja -DCUDANN_BUILD_PYTHON=OFF -DCMAKE_CUDA_HOST_COMPILER=g++-13
+          cmake --build build -j4
+      - name: reference suite (numpy oracle, sanity of the shared tests)
+        run: |
+          pip install "fnn-testkit @ git+https://github.com/napanto/fnn-bench#subdirectory=testkit"
+          pytest -q --pyargs fnn_testkit --backend numpy
+
+  image:
+    name: container image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    needs: [compile]
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: redhat-actions/podman-login@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          podman build -t ghcr.io/napanto/cudann:latest -f Containerfile .
+          podman push ghcr.io/napanto/cudann:latest

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["scikit-build-core>=1.0", "pybind11>=3.1"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cudann"
+version = "0.1.0"
+description = "CUDA feed-forward neural network library (cuBLAS + hand-written kernels), 1:1 port of syclnn"
+license = "LGPL-3.0-only"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26"]
+authors = [{ name = "Antonio Napolitano", email = "anton@polit.no" }]
+
+[project.urls]
+Homepage = "https://github.com/napanto/cudann"
+
+[tool.scikit-build]
+cmake.version = ">=3.26"
+cmake.build-type = "Release"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["python/cudann"]
+editable.mode = "redirect"
+sdist.exclude = ["build/", ".cache/", "*.so"]
+
+[tool.scikit-build.cmake.define]
+CUDANN_CUDA_ARCHS = { env = "CUDANN_CUDA_ARCHS", default = "61;80" }
+CUDANN_HIP = { env = "CUDANN_HIP", default = "OFF" }
+CUDANN_HIP_ARCHS = { env = "CUDANN_HIP_ARCHS", default = "gfx1100" }
+CUDANN_FAST_MATH = { env = "CUDANN_FAST_MATH", default = "OFF" }
+CUDANN_BUILD_BENCH = "OFF"
