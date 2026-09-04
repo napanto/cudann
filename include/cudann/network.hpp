@@ -1280,6 +1280,14 @@ std::vector<T> Network<T>::train(const std::vector<T> &input_samples, const std:
             // gather / step copy): stream order on s0 already sequences the graph after them.
             const ev_list batch_first = (bi == 0 && !graphs) ? first_deps : ev_list{};
             run_batch(x_batch, targets, cur, sp, batch_first, fine, direct, ev_upd, ev_act, ev_delta, ev_gw, ev_gb, chain_next);
+            if (!graphs && m_opts.sync_every && (bi + 1) % m_opts.sync_every == 0 && bi + 1 < n_batches) {
+                // Options::sync_every (parity with syclnn): drain the streams; every recorded
+                // dependency is complete afterwards, so the lists restart empty
+                sync_all();
+                for (auto &e : ev_upd)
+                    e = Ev{};
+                chain_next.clear();
+            }
             if (graphs) {
                 // join every stream back into the capturing stream, end the capture, instantiate
                 for (std::size_t si = 1; si < m_streams.size(); ++si) {

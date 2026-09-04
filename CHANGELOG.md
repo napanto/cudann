@@ -37,6 +37,8 @@ file layout and numerics.
   sources with `hipify-perl` at configure time and builds with hipcc + hipBLAS
   (used for the AMD portability experiment and for local validation on the
   RX 7900 XTX).
+- `Options.sync_every` (parity with syclnn): `sync_all()` every N batches, off by
+  default and ignored in graph mode.
 - Fixes from code review (post-0.1.0, before the NVIDIA runs): the dataset buffers, the
   per-step scalars and the captured CUDA graphs live in the object and are
   reused by the next `train()` of the same shape (with `persistent_workspace`),

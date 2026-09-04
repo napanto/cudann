@@ -333,7 +333,8 @@ PYBIND11_MODULE(CUDANN_MODULE_NAME, m) {
                     .def_readwrite("host_adam_correction", &Options::host_adam_correction)
                     .def_readwrite("workgroup_size", &Options::workgroup_size)
                     .def_readwrite("persistent_workspace", &Options::persistent_workspace)
-                    .def_readwrite("fast_math", &Options::fast_math);
+                    .def_readwrite("fast_math", &Options::fast_math)
+                    .def_readwrite("sync_every", &Options::sync_every);
     // memory / queue accept the enum or its lower-case name
     opts.def_property(
         "memory", [](const Options &o) { return o.memory; },
