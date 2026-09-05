@@ -136,6 +136,7 @@ struct Options {
     unsigned workgroup_size = 0;        ///< nd_range work-group / CUDA block size for element-wise kernels (0: runtime default)
     bool persistent_workspace = true;   ///< keep batch temporaries across train()/predict() calls
     bool fast_math = false;             ///< allow the backend's fast-math intrinsics (breaks parity)
+    bool sync_ops = false;              ///< wait for every launch (ompnn's synchronous execution model; ablation)
     std::string blas_queue = "auto";    ///< accepted for parity with syclnn (no meaning here)
     unsigned sync_every = 0;            ///< wait for the queue every N batches (0 = automatic: 4 on CPU devices, never on GPUs);
                                         ///< bounds the outstanding commands, which the OpenCL CPU runtime handles superlinearly

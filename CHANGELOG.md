@@ -39,6 +39,8 @@ file layout and numerics.
   RX 7900 XTX).
 - `Options.sync_every` (parity with syclnn): `sync_all()` every N batches, off by
   default and ignored in graph mode.
+- `Options.sync_ops`: `cudaStreamSynchronize` after every launch outside graph
+  capture (ompnn's synchronous execution model; E3 ablation).
 - Fixes from code review (post-0.1.0, before the NVIDIA runs): the dataset buffers, the
   per-step scalars and the captured CUDA graphs live in the object and are
   reused by the next `train()` of the same shape (with `persistent_workspace`),

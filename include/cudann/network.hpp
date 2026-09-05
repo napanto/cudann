@@ -703,6 +703,8 @@ detail::Ev Network<T>::submit(int s, const ev_list &deps, Phase phase, F launch,
             check(cudaStreamWaitEvent(st, d.e, 0), "cudaStreamWaitEvent");
     m_prof.record(phase, st, [&] { launch(st); }, bytes);
     check(cudaGetLastError(), "kernel launch");
+    if (m_opts.sync_ops && !m_capturing) // Options::sync_ops: the synchronous execution model
+        m_prof.timed_wait([&] { check(cudaStreamSynchronize(st), "cudaStreamSynchronize"); });
     return record(s);
 }
 
