@@ -1337,11 +1337,10 @@ std::vector<T> Network<T>::train(const std::vector<T> &input_samples, const std:
         losses.push_back(static_cast<T>(total));
         if (m_opts.record_history)
             snapshot_history();
-        if (m_prof.enabled()) {
-            m_prof.profile().epoch_wall_ns.push_back(Profiler::elapsed_ns(t_epoch));
-            ++m_prof.profile().epochs;
-            m_prof.profile().batches += n_batches;
-        }
+        // always recorded (a clock read per epoch): the steady-state epoch metric needs it
+        m_prof.profile().epoch_wall_ns.push_back(Profiler::elapsed_ns(t_epoch));
+        ++m_prof.profile().epochs;
+        m_prof.profile().batches += n_batches;
         bool stop = false;
         if (m_stop.type == StopCriteria<T>::Type::MinError) {
             stop = losses.back() < m_stop.threshold;
@@ -1357,8 +1356,7 @@ std::vector<T> Network<T>::train(const std::vector<T> &input_samples, const std:
         snapshot_history();
     if (!m_opts.persistent_workspace)
         release_workspace();
-    if (m_prof.enabled())
-        m_prof.profile().wall_ns += Profiler::elapsed_ns(t_start);
+    m_prof.profile().wall_ns += Profiler::elapsed_ns(t_start);
     return losses;
 }
 
@@ -1431,8 +1429,7 @@ std::vector<T> Network<T>::predict(const std::vector<T> &input_samples, unsigned
     }
     if (!m_opts.persistent_workspace)
         release_workspace();
-    if (m_prof.enabled())
-        m_prof.profile().wall_ns += Profiler::elapsed_ns(t_start);
+    m_prof.profile().wall_ns += Profiler::elapsed_ns(t_start);
     (void)s0;
     return out;
 }
