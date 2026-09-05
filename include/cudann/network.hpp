@@ -531,6 +531,8 @@ template <typename T> void Network<T>::init_device() {
         m_streams.push_back(s);
     }
     m_opts.streams = static_cast<unsigned>(S); // effective (1 for in_order, HIP graph)
+    if (m_opts.queue == QueueOrder::Graph)
+        m_opts.sync_ops = false; // graph replays launch whole graphs: nothing to wait on per launch
     // one BLAS handle per stream: rocBLAS keeps a per-handle device workspace that
     // concurrent GEMMs on different streams would share
     m_blas = Blas(use_handwritten(m_opts.blas), m_streams);
