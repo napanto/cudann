@@ -57,7 +57,7 @@ cmake -S . -B build -G Ninja && cmake --build build -j8 && ctest --test-dir buil
 ```
 
 The `ghcr.io/napanto/fnn-cuda` image (CUDA 12.9, gcc-13 host compiler, Python
-venv) has everything for the NVIDIA build; the `fnn-rocm` distrobox of the study
+venv) has everything for the NVIDIA build; the `fnn-rocm` image of the study (`ghcr.io/napanto/fnn-rocm`, or the equivalent distrobox built by fnn-bench's `scripts/rocm-toolchain.sh`)
 (ROCm 7.2.4) for the HIP build.
 
 ## Tests
