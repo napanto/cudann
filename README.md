@@ -40,6 +40,19 @@ The API is that of syclnn 0.2 (`Network_double` / `Network_float`, the
 accepts `default`, `gpu`, `cuda:N`, `index:N` or a name substring. Only
 `blas="auto"` (cuBLAS) exists.
 
+## Run the published image
+
+`ghcr.io/napanto/cudann` is the library installed in the `fnn-cuda` toolchain image (CUDA 12.9,
+cuBLAS), built by CI from the `Containerfile` on every push, with device code for `sm_61` and
+`sm_80`. One command on a host with an NVIDIA driver (>= 525) and the container toolkit's CDI spec:
+
+```sh
+podman run --rm -it --device nvidia.com/gpu=all ghcr.io/napanto/cudann python -c "import cudann; print(cudann.devices())"
+```
+
+The HIPified build for AMD GPUs is made from the `fnn-rocm` toolchain image (`fnn-bench/containers`)
+and is not published as a library image.
+
 ## Building
 
 ```sh
