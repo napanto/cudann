@@ -43,5 +43,5 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - run: |
-          podman build --build-arg FNN_IMAGE=ghcr.io/napanto/cudann:latest --build-arg FNN_IMAGE_BUILT=$(date -u +%F) -t ghcr.io/napanto/cudann:latest -f Containerfile .
+          podman build --build-arg IMAGE_NAME=ghcr.io/napanto/cudann:latest --build-arg IMAGE_BUILT=$(date -u +%F) -t ghcr.io/napanto/cudann:latest -f Containerfile .
           podman push ghcr.io/napanto/cudann:latest
