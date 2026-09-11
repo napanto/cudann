@@ -50,8 +50,16 @@ cuBLAS), built by CI from the `Containerfile` on every push, with device code fo
 podman run --rm -it --device nvidia.com/gpu=all ghcr.io/napanto/cudann python -c "import cudann; print(cudann.devices())"
 ```
 
-The HIPified build for AMD GPUs is made from the `fnn-rocm` toolchain image (`fnn-bench/containers`)
-and is not published as a library image.
+On an AMD GPU (ROCm 7.2 driver on the host) the `hip` tag is the HIPified build (`hipify-perl` +
+hipcc, gfx1100) on the `fnn-rocm` toolchain image:
+
+```sh
+podman run --rm -it --device /dev/kfd --device /dev/dri --group-add keep-groups ghcr.io/napanto/cudann:hip python -c "import cudann; print(cudann.devices())"
+```
+
+The AMD tag is built from the same `Containerfile` on the `fnn-rocm` base by
+`fnn-bench/scripts/publish-amd-variants.sh` (GitHub's runners cannot hold that base), so it is
+refreshed by hand, not on every push.
 
 ## Building
 
