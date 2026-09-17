@@ -171,6 +171,7 @@ struct Profile {
     std::uint64_t batches = 0;
     std::uint64_t unprofiled = 0; ///< events whose profiling info was unavailable
     std::vector<std::uint64_t> epoch_wall_ns;
+    std::vector<std::uint64_t> predict_wall_ns; ///< host wall-clock of every predict() call (ns)
 
     std::uint64_t device_total_ns() const {
         return h2d_ns + d2h_ns + gemm_ns + act_ns + delta_ns + biasgrad_ns + update_ns + loss_ns + reg_ns + other_ns;

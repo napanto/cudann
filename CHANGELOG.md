@@ -2,6 +2,24 @@
 
 All notable changes to cudann. The project follows [Semantic Versioning](https://semver.org).
 
+## [0.1.1] - 2026-09-17
+
+### Changed
+
+- `Network::train` and `Network::predict` gained raw-pointer overloads (`const T *`, read in
+  place); the `std::vector` overloads validate the sizes and delegate to them.
+- The Python bindings pass the NumPy buffers straight to the pointer overloads. A C-contiguous
+  array of the network's dtype is no longer copied into a `std::vector` before every call, so
+  the timed region of an inference call (`predict_wall_ns`, below) excludes the host copy of the
+  input that inflated the inference rows of the study; training rows were unaffected (their
+  per-epoch clock already started after the copy).
+
+### Added
+
+- `Profile::predict_wall_ns`: the host wall-clock of every `predict()` call, the inference
+  counterpart of `epoch_wall_ns`, recorded with the profiler off as well; exposed as
+  `profile["predict_wall_ns"]`.
+
 ## [0.1.0] - 2026-09
 
 First release: direct CUDA translation of syclnn 0.2.0 with the same public API,

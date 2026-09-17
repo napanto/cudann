@@ -13,9 +13,9 @@ option(CUDANN_FAST_MATH "nvcc --use_fast_math / hipcc -ffast-math (breaks parity
 set(CUDANN_MODULE_NAME "_cudann" CACHE STRING "Python extension module name")
 
 if(CUDANN_HIP)
-  project(cudann VERSION 0.1.0 LANGUAGES CXX)
+  project(cudann VERSION 0.1.1 LANGUAGES CXX)
 else()
-  project(cudann VERSION 0.1.0 LANGUAGES CXX CUDA)
+  project(cudann VERSION 0.1.1 LANGUAGES CXX CUDA)
 endif()
 
 set(CMAKE_CXX_STANDARD 17)

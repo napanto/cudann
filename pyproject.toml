@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "cudann"
-version = "0.1.0"
+version = "0.1.1"
 description = "CUDA feed-forward neural network library (cuBLAS + hand-written kernels), 1:1 port of syclnn"
 license = "LGPL-3.0-only"
 readme = "README.md"

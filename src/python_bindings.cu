@@ -13,6 +13,8 @@
 
 #include <cstring>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 
 #if __has_include("cudann/build_info.hpp")
 #include "cudann/build_info.hpp"
@@ -56,6 +58,12 @@ template <typename T> std::vector<T> to_vector(const arr_t<T> &a) {
     return std::vector<T>(p, p + a.size());
 }
 
+template <typename T> void check_values(const arr_t<T> &a, std::size_t expected, const char *what) {
+    if (std::size_t(a.size()) != expected)
+        throw std::invalid_argument(std::string("cudann: ") + what + " " + std::to_string(a.size()) + " values, expected " +
+                                    std::to_string(expected));
+}
+
 template <typename T> py::array_t<T> to_array(const std::vector<T> &v) {
     py::array_t<T> out(static_cast<py::ssize_t>(v.size()));
     if (!v.empty())
@@ -92,6 +100,7 @@ py::dict profile_to_dict(const Profile &p) {
     d["unprofiled"] = p.unprofiled;
     d["device_total_ns"] = p.device_total_ns();
     d["epoch_wall_ns"] = p.epoch_wall_ns;
+    d["predict_wall_ns"] = p.predict_wall_ns;
     return d;
 }
 
@@ -209,12 +218,16 @@ template <typename T> void declare_network(py::module_ &m, const std::string &su
         .def(
             "train",
             [](Net &self, arr_t<T> X, arr_t<T> Y, unsigned n_samples, unsigned batch_size, unsigned max_epochs) {
-                auto x = to_vector(X);
-                auto y = to_vector(Y);
+                // zero-copy: the C-contiguous arrays (arr_t) are read in place by the pointer overload
+                const std::size_t n_in = self.layers().front().neurons, n_out = self.layers().back().neurons;
+                if (n_samples != 0) {
+                    check_values(X, std::size_t(n_samples) * n_in, "input has");
+                    check_values(Y, std::size_t(n_samples) * n_out, "targets have");
+                }
                 std::vector<T> loss;
                 {
                     py::gil_scoped_release release;
-                    loss = self.train(x, y, n_samples, batch_size, max_epochs);
+                    loss = self.train(X.data(), Y.data(), n_samples, batch_size, max_epochs);
                 }
                 return to_array(loss);
             },
@@ -226,16 +239,19 @@ Returns the total loss (mean data loss + regularisation penalty) of every epoch 
         .def(
             "predict",
             [](Net &self, arr_t<T> X, unsigned n_samples, unsigned batch_size) {
-                auto x = to_vector(X);
+                // zero-copy: the C-contiguous array is read in place by the pointer overload
+                if (n_samples != 0)
+                    check_values(X, std::size_t(n_samples) * self.layers().front().neurons, "predict input has");
                 std::vector<T> out;
                 {
                     py::gil_scoped_release release;
-                    out = self.predict(x, n_samples, batch_size);
+                    out = self.predict(X.data(), n_samples, batch_size);
                 }
                 return to_array(out);
             },
             py::arg("x"), py::arg("n_samples"), py::arg("batch_size") = 0,
-            "Forward pass; returns flattened outputs (n_samples x n_out). batch_size 0 = one batch.")
+            "Forward pass; returns flattened outputs (n_samples x n_out). batch_size 0 = one batch. The input array is "
+            "read in place (no copy) when it is C-contiguous with the network's dtype.")
         .def_property_readonly(
             "weights_biases",
             [](const Net &self) {
