@@ -9,7 +9,7 @@ OpenMP* study (Accelerated Computing course, University of Pisa):
 
 * **memory model**: `memory=device` (`cudaMalloc` + explicit copies),
   `shared` (`cudaMallocManaged`, page migration), `host` (`cudaHostAlloc`
-  mapped zero-copy); pinned staging for the dataset (`pinned_host`);
+  mapped zero-copy); optional pinned staging for the dataset (`pinned_host`, off by default);
 * **synchronisation model**: `queue=in_order` (one stream), `out_of_order`
   (`streams=N` streams + `cudaStreamWaitEvent` dependencies reproducing
   syclnn's event graph), `graph` (one CUDA Graph captured per batch and

@@ -14,7 +14,7 @@
 #define CUDANN_VERSION_MAJOR 0
 #define CUDANN_VERSION_MINOR 1
 #define CUDANN_VERSION_PATCH 0
-#define CUDANN_VERSION_STRING "0.1.1"
+#define CUDANN_VERSION_STRING "0.1.2"
 
 namespace cudann {
 
@@ -123,7 +123,10 @@ struct Options {
     MemoryKind memory = MemoryKind::Device;    ///< 0.1: Shared
     QueueOrder queue = QueueOrder::OutOfOrder; ///< SYCL: queue property; CUDA: streams / graphs
     unsigned streams = 4;                      ///< CUDA: number of streams when queue == OutOfOrder
-    bool pinned_host = true;                   ///< stage host<->device copies through pinned memory
+    /// stage host<->device copies through pinned memory. Off by default since 0.1.2: the staging buffer is
+    /// allocated per train()/predict() call and costs more than it saves with DPC++ and CUDA (the path
+    /// then matches ompnn's direct copy); AdaptiveCpp's copies are faster with it (E3/E6 ablation rows).
+    bool pinned_host = false;
 
     bool loss_reduction = true;         ///< loss via reduction (0.1: one atomic per element)
     bool bias_gemv = true;              ///< bias gradient via GEMV (0.1: serial loop per neuron)
