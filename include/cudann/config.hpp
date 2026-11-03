@@ -125,7 +125,7 @@ struct Options {
     unsigned streams = 4;                      ///< CUDA: number of streams when queue == OutOfOrder
     /// stage host<->device copies through pinned memory. Off by default since 0.1.2: the staging buffer is
     /// allocated per train()/predict() call and costs more than it saves with DPC++ and CUDA (the path
-    /// then matches ompnn's direct copy); AdaptiveCpp's copies are faster with it (E3/E6 ablation rows).
+    /// then matches ompnn's direct copy); the same holds with AdaptiveCpp (E3/E6 ablation rows).
     bool pinned_host = false;
 
     bool loss_reduction = true;         ///< loss via reduction (0.1: one atomic per element)

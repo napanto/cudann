@@ -10,9 +10,10 @@ All notable changes to cudann. The project follows [Semantic Versioning](https:/
   `train()`/`predict()` call; with DPC++ and CUDA that allocation costs more than the pinned
   copy saves (call-level time of the mnist-512-256 training row on an A30: 151 -> 109 ms with
   DPC++, unchanged steady epoch), and an inference pass paid it on every call. The default path
-  is now the direct copy from pageable memory, the same as ompnn's. AdaptiveCpp's copies are
-  1.3-1.8x faster with pinned staging: `pinned_host=true` remains available and is measured as
-  an ablation (E3/E6 of the study).
+  is now the direct copy from pageable memory, the same as ompnn's. AdaptiveCpp behaves the same
+  way (same toolchain, A30: inference 4.6-7.2x slower with pinned staging, training steady epoch
+  within 8 %). `pinned_host=true` remains available and is measured as an ablation (E3/E6 of the
+  study).
 
 ## [0.1.1] - 2026-09-17
 
