@@ -146,7 +146,7 @@ template <typename T> struct UpdateParams {
 template <typename T>
 __device__ inline void step_fn(T &p, T grad, T reg_grad, T &m, T &v, const UpdateParams<T> &u, const StepScalars<T> &s) {
     using Strategy = typename AdaptiveLearningRate<T>::Strategy;
-    const T g = grad - reg_grad; // ascent direction of (t - o)
+    const T g = grad - reg_grad; // descent direction of the regularised loss (grad accumulates (t - o))
     T step;
     switch (static_cast<Strategy>(u.strategy)) {
     case Strategy::Constant:
