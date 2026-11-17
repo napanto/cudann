@@ -1,0 +1,76 @@
+name: GPU Simulator
+
+# Optional, non-required check. The hosted runners have no GPU, so this builds
+# the wheel and runs the pytest suite on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim). A simulator has no timing
+# model and cannot reproduce hardware-specific behavior, so it complements
+# real-GPU testing and does not replace it.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "include/**"
+      - "src/**"
+      - "python/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - "pyproject.toml"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: pytest (CUDA 13.0 and simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # library-path is false because cudann links the toolkit's cuBLAS.
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@a1b9d4237411f9b2b0e0bb895b4d83377f336a7b # v0.1.9
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+          library-path: 'false'
+
+      # 90-virtual embeds PTX only, which the simulator runs. The simulator
+      # needs a shared CUDA runtime.
+      - name: Build and install the wheel
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          export CUDANN_CUDA_ARCHS="90-virtual"
+          export CMAKE_ARGS="-DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCUDAToolkit_ROOT=/usr/local/cuda-13.0 -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.0/bin/nvcc"
+          export CMAKE_BUILD_PARALLEL_LEVEL=3
+          vgpu run --preload .venv/bin/pip install -v .
+          .venv/bin/pip install "fnn-testkit @ git+https://github.com/napanto/fnn-bench#subdirectory=testkit"
+
+      # The shared suite compares the network against a numpy oracle. Fail on
+      # any failure or error, on a skipped test that is not the testkit's own
+      # opt-in skip, on a VirtualGPU error, and unless a sensible number of
+      # tests passed (a run that found no device would not).
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          vgpu run --gpu nvidia/h100 .venv/bin/python -c "import cudann; print(cudann.devices())" 2>&1 | tee devices.log
+          grep -q "compute_capability" devices.log
+          vgpu run --gpu nvidia/h100 .venv/bin/python -m pytest tests -ra 2>&1 | tee pytest.log
+          if grep -qE "VirtualGPU error|no CUDA-capable device|[0-9]+ (failed|error)" pytest.log; then
+            echo "::error::failures or simulator errors in the pytest log"
+            exit 1
+          fi
+          passed=$(grep -oE "[0-9]+ passed" pytest.log | tail -1 | cut -d' ' -f1)
+          echo "passed: ${passed:-0}"
+          test "${passed:-0}" -ge 50
